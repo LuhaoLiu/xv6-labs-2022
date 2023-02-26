@@ -11,7 +11,7 @@
 
 void freerange(void *pa_start, void *pa_end);
 
-uint64 freemems = PGSIZE;
+uint64 freemems = 0;
 
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
@@ -72,8 +72,6 @@ kfree(void *pa)
 void *
 kalloc(void)
 {
-  freemems -= PGSIZE;
-
   struct run *r;
 
   acquire(&kmem.lock);
@@ -84,6 +82,9 @@ kalloc(void)
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
+
+  if ((void*)r != 0)
+    freemems -= PGSIZE;
   return (void*)r;
 }
 
