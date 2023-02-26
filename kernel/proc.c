@@ -236,6 +236,9 @@ userinit(void)
 
   p = allocproc();
   initproc = p;
+
+  // set default trace mask
+  p->trace_mask = 0;
   
   // allocate one user page and copy initcode's instructions
   // and data into it.
@@ -287,6 +290,9 @@ fork(void)
   if((np = allocproc()) == 0){
     return -1;
   }
+
+  // Copy trace mask.
+  np->trace_mask = p->trace_mask;
 
   // Copy user memory from parent to child.
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
@@ -680,4 +686,13 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+uint64 nproc(void) {
+  uint64 nprocs = 0;
+  struct proc *p;
+  for(p = proc; p < &proc[NPROC]; p++) {
+    if (p->state != UNUSED) nprocs++;
+  }
+  return nprocs;
 }

@@ -11,6 +11,8 @@
 
 void freerange(void *pa_start, void *pa_end);
 
+uint64 freemems = PGSIZE;
+
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
 
@@ -60,6 +62,8 @@ kfree(void *pa)
   r->next = kmem.freelist;
   kmem.freelist = r;
   release(&kmem.lock);
+
+  freemems += PGSIZE;
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -68,6 +72,8 @@ kfree(void *pa)
 void *
 kalloc(void)
 {
+  freemems -= PGSIZE;
+
   struct run *r;
 
   acquire(&kmem.lock);
@@ -79,4 +85,8 @@ kalloc(void)
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
+}
+
+uint64 freemem(void) {
+    return freemems;
 }

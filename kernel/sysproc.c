@@ -91,3 +91,16 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+// return 1 if the trace setting succeeded
+// else return -1
+uint64 sys_trace(void) {
+    int mask;
+
+    argint(0, &mask);
+    if ((myproc()->trace_mask = mask) > 0) {
+        return 0;
+    } else {
+        return -1;
+    }
+}

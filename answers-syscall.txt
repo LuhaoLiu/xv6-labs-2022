@@ -1,0 +1,7 @@
+usertrap()
+7; the code of the system call exec()
+user mode
+lw	a3,0(zero); a3
+try reading address 0; no; scause is 13 which means load page fault
+initcode; 1
+
