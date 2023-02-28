@@ -1,0 +1,6 @@
+fstat: cache information when open a file; trace: cache logs of system calls
+page 0: text of the program
+page 2: user stack guard page
+can read and write page 1 in user mode
+third to last page: struct usyscall 
+
