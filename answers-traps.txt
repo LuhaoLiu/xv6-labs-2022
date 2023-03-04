@@ -1,0 +1,7 @@
+a2 holds param 13 of printf
+both are inlined
+at 0x630
+ra will be 0x38
+output is He110 World; if big-endian, i = 0x726c6400; no need to change 57616
+the content in register a2
+
