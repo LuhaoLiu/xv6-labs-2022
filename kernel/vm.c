@@ -5,6 +5,7 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
 
 /*
  * the kernel's page table.
@@ -14,6 +15,35 @@ pagetable_t kernel_pagetable;
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
+
+struct {
+    struct spinlock lock;
+    uint cow_refs[(PHYSTOP - KERNBASE) / PGSIZE];
+} cow_refs;
+
+void add_refs(uint64 pa) {
+    acquire(&cow_refs.lock);
+    cow_refs.cow_refs[(pa - KERNBASE) / PGSIZE] += 1;
+    release(&cow_refs.lock);
+}
+
+uint dec_refs(uint64 pa) {
+    acquire(&cow_refs.lock);
+    if (cow_refs.cow_refs[(pa - KERNBASE) / PGSIZE] == 0) {
+        panic("dereference a freed physical page!");
+    }
+    cow_refs.cow_refs[(pa - KERNBASE) / PGSIZE] -= 1;
+    uint refs = cow_refs.cow_refs[(pa - KERNBASE) / PGSIZE];
+    release(&cow_refs.lock);
+    return refs;
+}
+
+uint get_refs(uint64 pa) {
+    acquire(&cow_refs.lock);
+    uint refs = cow_refs.cow_refs[(pa - KERNBASE) / PGSIZE];
+    release(&cow_refs.lock);
+    return refs;
+}
 
 // Make a direct-map page table for the kernel.
 pagetable_t
@@ -300,15 +330,15 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 // its memory into a child's page table.
 // Copies both the page table and the
 // physical memory.
-// returns 0 on success, -1 on failure.
-// frees any allocated pages on failure.
+// returns 0 on success
+// returns -1 for failure on map new, unmaps all pages in new.
+// returns -2 for failure on remap old, frees all physical memory.
 int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
   uint64 pa, i;
-  uint flags;
-  char *mem;
+  uint flags, new_flags;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -317,19 +347,36 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
+    new_flags = (flags & PTE_W) ? ((flags | PTE_COW) & ~PTE_W) : flags;
+//    if((mem = kalloc()) == 0)
+//      goto err;
+//    memmove(mem, (char*)pa, PGSIZE);
+//    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+//      kfree(mem);
+//      goto err;
+//    }
+    if(mappages(new, i, PGSIZE, pa, new_flags) != 0){
+      goto err_new;
     }
+    if(new_flags != flags) {
+      uvmunmap(old, i, 1, 0);
+      if(mappages(old, i, PGSIZE, pa, new_flags) != 0) {
+        goto err_old;
+      }
+    }
+    add_refs(pa);
   }
   return 0;
 
- err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
+ err_new:
+  // clear refs ?
+  uvmunmap(new, 0, i / PGSIZE, 0);
   return -1;
+ err_old:
+  // clear refs ?
+  uvmunmap(new, 0, i / PGSIZE, 0);
+  uvmunmap(old, 0, sz, 1);
+  return -2;
 }
 
 // mark a PTE invalid for user access.
@@ -352,16 +399,46 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
+  void *mem;
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+    if(va0 >= MAXVA) return -1;
+    pte_t *pte = walk(pagetable, va0, 0);
+    if(pte == 0) return -1;
+    pa0 = PTE2PA(*pte);
+    mem = (void *)pa0;
+    if((*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
       return -1;
+    if(*pte & PTE_COW){
+      uint new_flags = ((PTE_FLAGS(*pte) | PTE_W) & ~PTE_COW);
+      if(get_refs(pa0) == 1){
+        uvmunmap(pagetable, va0, 1, 0);
+        if(mappages(pagetable, va0, PGSIZE, pa0, new_flags) != 0){
+          setkilled(myproc());
+          panic("mappages fails, user process killed\n");
+        }
+      } else {
+        //while((uint64)(mem = kalloc()) == 0);
+        mem = kalloc();
+        if(mem == 0){
+          // no more phys mem
+          setkilled(myproc());
+          return -1;
+        }
+        memmove(mem, (void *)pa0, PGSIZE);
+        uvmunmap(pagetable, va0, 1, 0);
+        kfree((void *)pa0);
+        if(mappages(pagetable, va0, PGSIZE, (uint64)mem, new_flags) != 0){
+          setkilled(myproc());
+          panic("mappages fails, user process killed\n");
+        }
+      }
+    }
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
-    memmove((void *)(pa0 + (dstva - va0)), src, n);
+    memmove((void *)((uint64)mem + (dstva - va0)), src, n);
 
     len -= n;
     src += n;

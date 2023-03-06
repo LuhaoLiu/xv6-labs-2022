@@ -34,38 +34,76 @@ trapinithart(void)
 // called from trampoline.S
 //
 void
-usertrap(void)
-{
-  int which_dev = 0;
+usertrap(void) {
+    int which_dev = 0;
 
-  if((r_sstatus() & SSTATUS_SPP) != 0)
-    panic("usertrap: not from user mode");
+    if ((r_sstatus() & SSTATUS_SPP) != 0)
+        panic("usertrap: not from user mode");
 
-  // send interrupts and exceptions to kerneltrap(),
-  // since we're now in the kernel.
-  w_stvec((uint64)kernelvec);
+    // send interrupts and exceptions to kerneltrap(),
+    // since we're now in the kernel.
+    w_stvec((uint64) kernelvec);
 
-  struct proc *p = myproc();
-  
-  // save user program counter.
-  p->trapframe->epc = r_sepc();
-  
-  if(r_scause() == 8){
-    // system call
+    struct proc *p = myproc();
 
-    if(killed(p))
-      exit(-1);
+    // save user program counter.
+    p->trapframe->epc = r_sepc();
 
-    // sepc points to the ecall instruction,
-    // but we want to return to the next instruction.
-    p->trapframe->epc += 4;
+    if (r_scause() == 8) {
+        // system call
 
-    // an interrupt will change sepc, scause, and sstatus,
-    // so enable only now that we're done with those registers.
-    intr_on();
+        if (killed(p))
+            exit(-1);
 
-    syscall();
-  } else if((which_dev = devintr()) != 0){
+        // sepc points to the ecall instruction,
+        // but we want to return to the next instruction.
+        p->trapframe->epc += 4;
+
+        // an interrupt will change sepc, scause, and sstatus,
+        // so enable only now that we're done with those registers.
+        intr_on();
+
+        syscall();
+    } else if(r_scause() == 15){
+      // do things about page fault
+      uint64 va = PGROUNDDOWN(r_stval());
+      if(va >= MAXVA){
+        setkilled(p);
+        exit(-1);
+      }
+      pte_t *pte = walk(p->pagetable, va, 0);
+      if((*pte & PTE_V) && (*pte & PTE_U) && (*pte & PTE_COW)){
+        uint new_flags = ((PTE_FLAGS(*pte) | PTE_W) & ~PTE_COW);
+        uint64 pa = PTE2PA(*pte);
+        if(get_refs(pa) == 1){
+          uvmunmap(p->pagetable, va, 1, 0);
+          if(mappages(p->pagetable, va, PGSIZE, pa, new_flags) != 0){
+            setkilled(p);
+            printf("mappages fails, user process killed\n");
+          }
+        } else {
+          void *mem;
+          //while((uint64)(mem = kalloc()) == 0);
+          mem = kalloc();
+          if(mem == 0){
+            // no more phys mem
+            setkilled(p);
+            exit(-1);
+          }
+          memmove(mem, (void *)pa, PGSIZE);
+          uvmunmap(p->pagetable, va, 1, 0);
+          kfree((void *)pa);
+          if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, new_flags) != 0){
+            setkilled(p);
+            printf("mappages fails, user process killed\n");
+          }
+        }
+      } else {
+        printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+        printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+        setkilled(p);
+      }
+    } else if((which_dev = devintr()) != 0){
     // ok
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
