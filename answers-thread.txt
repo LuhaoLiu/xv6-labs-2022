@@ -1,0 +1,2 @@
+races will occur when multithreading, for example, t1 runs e->next = n when t2 have finished e->next = n but not *p = e.
+
