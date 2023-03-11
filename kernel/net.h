@@ -43,6 +43,7 @@ struct mbuf *mbufq_pophead(struct mbufq *q);
 int mbufq_empty(struct mbufq *q);
 void mbufq_init(struct mbufq *q);
 
+void net_rx(struct mbuf*);
 
 //
 // endianness support
