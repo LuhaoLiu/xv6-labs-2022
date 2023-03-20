@@ -59,7 +59,6 @@ testsymlink(void)
   char buf[4] = {'a', 'b', 'c', 'd'};
   char c = 0, c2 = 0;
   struct stat st;
-    
   printf("Start: test symlinks\n");
 
   mkdir("/testsymlink");
@@ -101,7 +100,6 @@ testsymlink(void)
   r = symlink("/testsymlink/nonexistent", "/testsymlink/c");
   if(r != 0)
     fail("Symlinking to nonexistent file should succeed\n");
-
   r = symlink("/testsymlink/2", "/testsymlink/1");
   if(r) fail("Failed to link 1->2");
   r = symlink("/testsymlink/3", "/testsymlink/2");
