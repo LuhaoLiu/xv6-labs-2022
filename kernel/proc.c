@@ -3,8 +3,12 @@
 #include "memlayout.h"
 #include "riscv.h"
 #include "spinlock.h"
+#include "sleeplock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fs.h"
+#include "file.h"
+#include "fcntl.h"
 
 struct cpu cpus[NCPU];
 
@@ -124,6 +128,12 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+
+  // Initialize VMAs
+  p->max_addr = MAXVA - (PGSIZE * 2);
+  for (int i = 0; i < MAXVMA; i++) {
+      p->mmap_vma[i].addr = 0;
+  }
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -274,6 +284,27 @@ growproc(int n)
   return 0;
 }
 
+// Write back files from mmap vma to disk.
+void vma_writeback(struct mmap_vma* vma, uint64 addr, int sz) {
+    struct file* f = vma->file;
+    int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
+    int i = 0, r;
+    while (i < sz) {
+        int willwrite = ((sz - i > max) ? max : sz - i);
+        begin_op();
+        ilock(f->ip);
+        if (!(r = writei(f->ip, 1, addr + i, vma->offset + addr - vma->addr + i, willwrite))) {
+            // nothing more to write
+            iunlock(f->ip);
+            end_op();
+            return;
+        }
+        i += r;
+        iunlock(f->ip);
+        end_op();
+    }
+}
+
 // Create a new process, copying the parent.
 // Sets up child kernel stack to return as if from fork() system call.
 int
@@ -295,6 +326,20 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
+
+  // Copy mmap vma.
+  for (int i = 0; i < MAXVMA; i++) {
+      if (p->mmap_vma[i].addr) {
+          np->mmap_vma[i].addr = p->mmap_vma[i].addr;
+          np->mmap_vma[i].len = p->mmap_vma[i].len;
+          np->mmap_vma[i].offset = p->mmap_vma[i].offset;
+          np->mmap_vma[i].prot = p->mmap_vma[i].prot;
+          np->mmap_vma[i].flags = p->mmap_vma[i].flags;
+          np->mmap_vma[i].fd = p->mmap_vma[i].fd;
+          np->mmap_vma[i].file = p->mmap_vma[i].file;
+          np->mmap_vma[i].file->ref++;
+      }
+  }
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
@@ -350,6 +395,22 @@ exit(int status)
 
   if(p == initproc)
     panic("init exiting");
+
+  for (int i = 0; i < MAXVMA; i++) {
+      if (p->mmap_vma[i].addr) {
+          struct mmap_vma* vma = &p->mmap_vma[i];
+          for (uint64 a = PGROUNDDOWN(vma->addr); a < vma->addr + vma->len; a += PGSIZE) {
+              pte_t *pte = walk(p->pagetable, a, 0);
+              if (vma->flags & MAP_SHARED) {
+                  vma_writeback(vma, a, PGSIZE);
+              }
+              if (!(PTE2PA(*pte) == 0)) {
+                  uvmunmap(p->pagetable, a, 1, 1);
+              }
+          }
+          vma->file->ref--;
+      }
+  }
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){

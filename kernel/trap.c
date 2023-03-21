@@ -3,8 +3,12 @@
 #include "memlayout.h"
 #include "riscv.h"
 #include "spinlock.h"
+#include "sleeplock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fs.h"
+#include "file.h"
+#include "fcntl.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -65,6 +69,51 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if (r_scause() == 12 || r_scause() == 13 || r_scause() == 15) {
+      // check mmap VMAs
+      uint64 addr = r_stval();
+      struct mmap_vma* vma = 0;
+      for (int i = 0; i < MAXVMA; i++) {
+          if (p->mmap_vma[i].addr <= addr && p->mmap_vma[i].addr + p->mmap_vma[i].len > addr) {
+              // found corresponding entry in mmap vma
+              vma = &p->mmap_vma[i];
+              break;
+          }
+      }
+      if (!vma) {
+          setkilled(p);
+          exit(-1);
+      }
+      if (r_scause() == 12 && !(vma->prot & PROT_EXEC)) {
+          setkilled(p);
+          exit(-1);
+      }
+      if (r_scause() == 13 && !(vma->prot & PROT_READ)) {
+          setkilled(p);
+          exit(-1);
+      }
+      if (r_scause() == 15 && !(vma->prot & PROT_WRITE)) {
+          setkilled(p);
+          exit(-1);
+      }
+      char *mem = kalloc();
+      if (!mem) {
+          setkilled(p);
+          exit(-1);
+      }
+      memset(mem, 0, PGSIZE);
+      if (mappages(p->pagetable, PGROUNDDOWN(addr), PGSIZE, (uint64)mem, vma->prot << 1 | PTE_U)) {
+          kfree(mem);
+          setkilled(p);
+          exit(-1);
+      }
+      // read file to memory
+      ilock(vma->file->ip);
+//      printf("read at %p, vma from %p\n", PGROUNDDOWN(addr), vma->addr);
+//      printf("inode size %d\n", vma->file->ip->size);
+//      printf("read %d\n", readi(vma->file->ip, 0, (uint64)mem, PGROUNDDOWN(addr) - vma->addr, PGSIZE));
+      readi(vma->file->ip, 0, (uint64)mem, vma->offset + PGROUNDDOWN(addr) - vma->addr, PGSIZE);
+      iunlock(vma->file->ip);
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
